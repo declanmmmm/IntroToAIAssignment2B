@@ -1,79 +1,69 @@
 import pandas as pd
 import numpy as np
+from sklearn.preprocessing import MinMaxScaler
 
-ds = pd.read_excel("Datasets/MainSCATSDataset.xls", sheet_name="Data")
-    
+ds = pd.read_excel("Datasets/MainSCATSDataset.xls", sheet_name="Data", engine="xlrd", header=None)
 
-#removing the first line (empty)
-ds.columns = ds.iloc[0]
-ds = ds.drop(0)
-
-#isolating traffic columns (V0 - V95)
-
-traffic_cols = ds.columns[-96:]
-traffic_data = ds[traffic_cols]
-
-
-#printing original data
-print("\n\n")
-print("This is the head of the data")
-print(ds.head())
-print("\n")
-print("This is the columns")
-print(ds.columns)
-print("\n")
-print("This is the shape")
-print(ds.shape)
-
-#printing traffic data (only V0 - V95)
-
-print("\n\n")
-print("Head from traffic data")
-print(traffic_data.head())
-
-#just testing the data with a singular site (0970)
+# row 1 is the actual header
+ds.columns = ds.iloc[1]
+ds = ds.drop([0, 1]).reset_index(drop=True)
 
 ds["SCATS Number"] = ds["SCATS Number"].astype(str).str.strip()
 
-site = ds[ds["SCATS Number"] == "0970"]
+traffic_cols = [f"V{str(i).zfill(2)}" for i in range(96)]
 
-values = site[traffic_cols].astype(float).values.flatten()
+print("shape:", ds.shape)
+print("sites:", ds["SCATS Number"].nunique())
 
-print(values[:50])
-print(len(values))
+LOOKBACK = 8
 
-#Create sequences using 8 previous values (2 hours)
-
-X = []
-y = []
-
-for i in range(len(values) - 8):
-    X.append(values[i:i+8])
-    y.append(values[i+8])
-
-#Convert to numpy arrays
-X = np.array(X)
-y = np.array(y)
-
-#Check shapes
-print("X shape before reshape:", X.shape)
-print("y shape:", y.shape)
-
-#Reshape for LSTM: (samples, timesteps, features)
-X = X.reshape((X.shape[0], X.shape[1], 1))
-
-print("X shape after reshape:", X.shape)
+def make_sequences(values, lookback=LOOKBACK):
+    X, y = [], []
+    for i in range(len(values) - lookback):
+        X.append(values[i:i + lookback])
+        y.append(values[i + lookback])
+    return np.array(X), np.array(y)
 
 
-#Spliting data 80/20
+site_data = {}
 
-split = int(len(X) * 0.8)
+for site_id, group in ds.groupby("SCATS Number"):
 
-X_train = X[:split]
-X_test = X[split:]
+    raw = group[traffic_cols].astype(float).values.flatten()
 
-y_train = y[:split]
-y_test = y[split:]
+    series = pd.Series(raw)
+    series = series.ffill().bfill()
 
-print("Training samples:", len(X_train))# <- Number of samples used in training
-print("Testing samples:", len(X_test))# <- Number of samples used in testing
+    if series.isna().all():
+        print(f"skipping {site_id} - no data")
+        continue
+
+    values = series.values
+
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    values_scaled = scaler.fit_transform(values.reshape(-1, 1)).flatten()
+
+    X, y = make_sequences(values_scaled)
+
+    if len(X) < 20:
+        print(f"skipping {site_id} - not enough data")
+        continue
+
+    X = X.reshape((X.shape[0], X.shape[1], 1))
+
+    split = int(len(X) * 0.8)
+
+    site_data[site_id] = {
+        "scaler":  scaler,
+        "X_train": X[:split],
+        "X_test":  X[split:],
+        "y_train": y[:split],
+        "y_test":  y[split:],
+    }
+
+print(f"processed {len(site_data)} sites")
+
+# quick check
+d = site_data["0970"]
+print("X_train shape:", d["X_train"].shape)
+print("X_test shape:", d["X_test"].shape)
