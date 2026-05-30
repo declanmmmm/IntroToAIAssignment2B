@@ -14,6 +14,8 @@ from traveltime import get_travel_time
 LOOKBACK = 8
 traffic_cols = [f"V{str(i).zfill(2)}" for i in range(96)]
 
+model_cache = {}
+
 
 def load_dataset(xlsx_path="Datasets/Dataonly.xlsx"):
     df = pd.read_excel(xlsx_path)
@@ -24,19 +26,18 @@ def load_dataset(xlsx_path="Datasets/Dataonly.xlsx"):
 
 
 def time_to_interval(time_str):
-    # convert "HH:MM" to interval index 0-95
     h, m = map(int, time_str.split(":"))
     return (h * 60 + m) // 15
 
 
 def predict_flow(site_id, interval, df, model_dir="saved_models", model_name="lstm"):
     model_path = f"{model_dir}/{model_name}_{site_id}.keras"
+
     if not os.path.exists(model_path):
-        # fall back to average if no model saved
         group = df[df["SCATS Number"] == site_id]
         raw = group[traffic_cols].astype(float).values.flatten()
         avg = np.nanmean(raw[max(0, interval-8):interval]) if interval > 0 else np.nanmean(raw)
-        return avg * 4  # convert to per hour
+        return avg * 4
 
     group = df[df["SCATS Number"] == site_id]
     raw = group[traffic_cols].astype(float).values.flatten()
@@ -45,18 +46,21 @@ def predict_flow(site_id, interval, df, model_dir="saved_models", model_name="ls
     scaler = MinMaxScaler(feature_range=(0, 1))
     scaled = scaler.fit_transform(series.reshape(-1, 1)).flatten()
 
-    # get the 8 intervals before the target interval
     if interval < LOOKBACK:
         seq = scaled[:LOOKBACK]
     else:
         seq = scaled[interval - LOOKBACK:interval]
 
-    model = load_model(model_path)
+    cache_key = f"{model_name}_{site_id}"
+    if cache_key not in model_cache:
+        model_cache[cache_key] = load_model(model_path)
+    model = model_cache[cache_key]
+
     X = seq.reshape(1, LOOKBACK, 1)
     pred_scaled = model.predict(X, verbose=0)
     pred = scaler.inverse_transform(pred_scaled)[0][0]
 
-    return max(0, pred) * 4  # convert to per hour
+    return max(0, pred) * 4
 
 
 def get_edge_cost(site_a, site_b, dist_km, interval, df, model_name="lstm"):
@@ -64,13 +68,13 @@ def get_edge_cost(site_a, site_b, dist_km, interval, df, model_name="lstm"):
     return get_travel_time(flow, dist_km)
 
 
-# UCS - finds shortest path by travel time
+#Code for UCS
 def ucs(nodes, edges, origin, destination, interval, df, model_name="lstm"):
     frontier = [(0, origin, [origin])]
     visited = set()
     created = 1
 
-    while frontier:
+    while len(frontier) > 0:
         frontier.sort(key=lambda x: x[0])
         cost, current, path = frontier.pop(0)
 
@@ -90,20 +94,20 @@ def ucs(nodes, edges, origin, destination, interval, df, model_name="lstm"):
     return None, float("inf"), created
 
 
-# A* - uses straight line distance to destination as heuristic
+#Code for A*
 def astar(nodes, edges, origin, destination, interval, df, model_name="lstm"):
     def heuristic(node):
         if node not in nodes or destination not in nodes:
             return 0
         dist = haversine(nodes[node]["lat"], nodes[node]["lon"],
                          nodes[destination]["lat"], nodes[destination]["lon"])
-        return dist / 60 * 3600  # assume speed limit for heuristic (seconds)
+        return dist / 60 * 3600
 
     frontier = [(heuristic(origin), 0, origin, [origin])]
     visited = set()
     created = 1
 
-    while frontier:
+    while len(frontier) > 0:
         frontier.sort(key=lambda x: x[0])
         f, cost, current, path = frontier.pop(0)
 
@@ -124,15 +128,17 @@ def astar(nodes, edges, origin, destination, interval, df, model_name="lstm"):
     return None, float("inf"), created
 
 
-# find top-k paths by temporarily blocking edges from previous paths
+#Code for finding top-k paths
 def find_top_k(nodes, edges, origin, destination, interval, df, k=5, algorithm="astar", model_name="lstm"):
     results = []
     blocked = set()
 
-    search_fn = astar if algorithm == "astar" else ucs
+    if algorithm == "astar":
+        search_fn = astar
+    else:
+        search_fn = ucs
 
     for _ in range(k):
-        # temporarily remove blocked edges
         filtered_edges = {}
         for node, neighbours in edges.items():
             filtered_edges[node] = [(n, d) for n, d in neighbours if (node, n) not in blocked]
@@ -144,10 +150,8 @@ def find_top_k(nodes, edges, origin, destination, interval, df, k=5, algorithm="
 
         results.append((path, cost, created))
 
-        # block one edge from this path to force a different route next time
         if len(path) >= 2:
             mid = (len(path) - 2) // 2
-
             blocked.add((path[mid], path[mid + 1]))
             blocked.add((path[mid + 1], path[mid]))
 
@@ -184,11 +188,12 @@ if __name__ == "__main__":
         print(f"\n--- {algo.upper()} ---")
         routes = find_top_k(nodes, edges, origin, destination, interval, df, k=5, algorithm=algo, model_name=model_name)
 
-        if not routes:
+        if len(routes) == 0:
             print("no routes found")
             continue
 
-        for i, (path, cost, created) in enumerate(routes, 1):
-            print(f"\nroute {i}: {' -> '.join(path)}")
+        for i in range(len(routes)):
+            path, cost, created = routes[i]
+            print(f"\nroute {i+1}: {' -> '.join(path)}")
             print(f"  estimated travel time: {format_time(cost)}")
             print(f"  nodes created: {created}")

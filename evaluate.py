@@ -17,7 +17,8 @@ traffic_cols = [f"V{str(i).zfill(2)}" for i in range(96)]
 LOOKBACK = 8
 
 def make_sequences(values, lookback=LOOKBACK):
-    X, y = [], []
+    X = []
+    y = []
     for i in range(len(values) - lookback):
         X.append(values[i:i + lookback])
         y.append(values[i + lookback])
@@ -53,32 +54,50 @@ for site_id in ds["SCATS Number"].unique():
     y_test = y[split:]
     actual = scaler.inverse_transform(y_test.reshape(-1, 1)).flatten()
 
-    preds = {}
+    lstm_preds = None
+    gru_preds = None
+    cnn_preds = None
 
-    for name in ["lstm", "gru", "cnn_lstm"]:
-        path = f"saved_models/{name}_{site_id}.keras"
-        if not os.path.exists(path):
-            print(f"  {name} model not found")
-            continue
-        model = load_saved_model(f"{name}_{site_id}")
-        print(f"  {name}:")
+    #Evaluate LSTM
+    lstm_path = f"saved_models/lstm_{site_id}.keras"
+    if os.path.exists(lstm_path):
+        print("  lstm:")
+        model = load_saved_model(f"lstm_{site_id}")
         m = evaluate_model(model, X_test, y_test, scaler)
         m["site"] = site_id
-        preds[name] = m["predictions"].flatten()
-        if name == "lstm":
-            lstm_results.append(m)
-        elif name == "gru":
-            gru_results.append(m)
-        else:
-            cnn_results.append(m)
+        lstm_results.append(m)
+        lstm_preds = m["predictions"].flatten()
 
-    # plot this site
-    if preds:
+    #Evaluate GRU
+    gru_path = f"saved_models/gru_{site_id}.keras"
+    if os.path.exists(gru_path):
+        print("  gru:")
+        model = load_saved_model(f"gru_{site_id}")
+        m = evaluate_model(model, X_test, y_test, scaler)
+        m["site"] = site_id
+        gru_results.append(m)
+        gru_preds = m["predictions"].flatten()
+
+    #Evaluate CNN-LSTM
+    cnn_path = f"saved_models/cnn_lstm_{site_id}.keras"
+    if os.path.exists(cnn_path):
+        print("  cnn_lstm:")
+        model = load_saved_model(f"cnn_lstm_{site_id}")
+        m = evaluate_model(model, X_test, y_test, scaler)
+        m["site"] = site_id
+        cnn_results.append(m)
+        cnn_preds = m["predictions"].flatten()
+
+    #Plot predicted vs actual for this site
+    if lstm_preds is not None or gru_preds is not None or cnn_preds is not None:
         plt.figure(figsize=(12, 4))
         plt.plot(actual, label="actual", color="black", linewidth=1)
-        for name, p in preds.items():
-            colors = {"lstm": "blue", "gru": "orange", "cnn_lstm": "green"}
-            plt.plot(p, label=name, color=colors[name], alpha=0.7, linewidth=1)
+        if lstm_preds is not None:
+            plt.plot(lstm_preds, label="lstm", color="blue", alpha=0.7, linewidth=1)
+        if gru_preds is not None:
+            plt.plot(gru_preds, label="gru", color="orange", alpha=0.7, linewidth=1)
+        if cnn_preds is not None:
+            plt.plot(cnn_preds, label="cnn_lstm", color="green", alpha=0.7, linewidth=1)
         plt.title(f"site {site_id}")
         plt.xlabel("time interval")
         plt.ylabel("vehicles")
@@ -88,30 +107,37 @@ for site_id in ds["SCATS Number"].unique():
         plt.close()
 
 
-# comparison bar chart
 print("\nresults summary:")
-for name, res in [("lstm", lstm_results), ("gru", gru_results), ("cnn_lstm", cnn_results)]:
-    if not res:
-        continue
-    print(f"\n{name}")
-    print(f"  mae:  {np.mean([r['mae']  for r in res]):.2f}")
-    print(f"  rmse: {np.mean([r['rmse'] for r in res]):.2f}")
-    print(f"  mape: {np.mean([r['mape'] for r in res]):.2f}%")
 
-names = []
-maes = []
-rmses = []
-for name, res in [("lstm", lstm_results), ("gru", gru_results), ("cnn_lstm", cnn_results)]:
-    if res:
-        names.append(name)
-        maes.append(np.mean([r["mae"] for r in res]))
-        rmses.append(np.mean([r["rmse"] for r in res]))
+print("\nlstm")
+print(f"  mae:  {np.mean([r['mae']  for r in lstm_results]):.2f}")
+print(f"  rmse: {np.mean([r['rmse'] for r in lstm_results]):.2f}")
+print(f"  mape: {np.mean([r['mape'] for r in lstm_results]):.2f}%")
+
+print("\ngru")
+print(f"  mae:  {np.mean([r['mae']  for r in gru_results]):.2f}")
+print(f"  rmse: {np.mean([r['rmse'] for r in gru_results]):.2f}")
+print(f"  mape: {np.mean([r['mape'] for r in gru_results]):.2f}%")
+
+print("\ncnn_lstm")
+print(f"  mae:  {np.mean([r['mae']  for r in cnn_results]):.2f}")
+print(f"  rmse: {np.mean([r['rmse'] for r in cnn_results]):.2f}")
+print(f"  mape: {np.mean([r['mape'] for r in cnn_results]):.2f}%")
+
+#Bar chart comparing models
+names = ["lstm", "gru", "cnn_lstm"]
+maes  = [np.mean([r["mae"]  for r in lstm_results]),
+         np.mean([r["mae"]  for r in gru_results]),
+         np.mean([r["mae"]  for r in cnn_results])]
+rmses = [np.mean([r["rmse"] for r in lstm_results]),
+         np.mean([r["rmse"] for r in gru_results]),
+         np.mean([r["rmse"] for r in cnn_results])]
 
 x = np.arange(len(names))
 width = 0.35
 
 fig, ax = plt.subplots(figsize=(8, 5))
-ax.bar(x - width/2, maes, width, label="MAE", color="steelblue")
+ax.bar(x - width/2, maes,  width, label="MAE",  color="steelblue")
 ax.bar(x + width/2, rmses, width, label="RMSE", color="coral")
 ax.set_xticks(x)
 ax.set_xticklabels(names)

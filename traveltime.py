@@ -3,38 +3,47 @@ import math
 SPEED_LIMIT = 60
 INTERSECTION_DELAY = 30 / 3600
 
+
+def solve_green(a, b, flow):
+    disc = b**2 - 4 * a * flow
+    if disc < 0:
+        return SPEED_LIMIT
+    return (-b + math.sqrt(disc)) / (2 * a)
+
+
+def solve_red(a, b, flow):
+    disc = b**2 - 4 * a * flow
+    if disc < 0:
+        return 1
+    return (-b - math.sqrt(disc)) / (2 * a)
+
+
+#Convert traffic flow to speed using the fundamental diagram
 def flow_to_speed(flow_per_hour):
     # from the assignment doc: flow = -1.4648375 * speed^2 + 93.75 * speed
     # rearranged to solve for speed using quadratic formula
     a = 1.4648375
     b = -93.75
 
-    def solve_red(flow):
-        disc = b**2 - 4 * a * flow
-        if disc < 0:
-            return 1
-        return (-b - math.sqrt(disc)) / (2 * a)
-
-    def solve_green(flow):
-        disc = b**2 - 4 * a * flow
-        if disc < 0:
-            return SPEED_LIMIT
-        return (-b + math.sqrt(disc)) / (2 * a)
-
     if flow_per_hour <= 1500:
-        speed = solve_green(flow_per_hour)
+        speed = solve_green(a, b, flow_per_hour)
     else:
         # mirror around capacity point (1500)
         # e.g. 2000 veh/hr -> 1500 - 500 = 1000 -> use red line at 1000
         mirrored = 3000 - flow_per_hour
-        mirrored = max(mirrored, 0)
-        speed = solve_red(mirrored)
+        if mirrored < 0:
+            mirrored = 0
+        speed = solve_red(a, b, mirrored)
 
-    speed = min(speed, SPEED_LIMIT)
-    speed = max(speed, 1)
+    if speed > SPEED_LIMIT:
+        speed = SPEED_LIMIT
+    if speed < 1:
+        speed = 1
+
     return speed
 
 
+#Calculate travel time in seconds for a given flow and distance
 def get_travel_time(flow_per_hour, distance_km):
     speed = flow_to_speed(flow_per_hour)
     travel_time = distance_km / speed
